@@ -1,0 +1,4 @@
+sim/build/
+sim/.cache/
+__pycache__/
+*.pyc
