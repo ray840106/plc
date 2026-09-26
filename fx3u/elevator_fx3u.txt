@@ -1,0 +1,1051 @@
+; =============================================================================
+;  4 層電梯控制 — 三菱 FX3U 階梯圖（指令表）          GX Works2 / GX Developer
+; =============================================================================
+;  控制邏輯與 src/02_FB_ElevatorCtrl.st（ST 版）相同，已用模擬器跑過同一套測試。
+;  I/O、軟元件分配與輸入方法見 fx3u/README.md，階梯圖見 fx3u/ladder.html。
+;
+;  格式：每行一個指令；空行分隔梯級；「;」之後是註解。
+;  「;;」開頭是段落標題（可輸入為 GX Works2 的「宣告 Statement」）。
+;
+;  狀態（同時只有一個 ON）：
+;    M200 初始化   M201 找樓層   M202 待命     M203 開門中   M204 開門停留
+;    M205 關門中   M206 起動延遲 M207 運行     M208 停車     M209 再平層
+;    M210 故障
+;  M232 = 本次掃描已發生狀態轉移。每個轉移梯級都串 M232 的 b 接點，
+;         確保每次掃描最多轉移一次（和 ST 版的 CASE 相同）。
+; =============================================================================
+
+;; 0. 上電初始化
+; 第一次掃描：清除所有內部記憶，進入「初始化」狀態
+LD      M8002
+ZRST    M100    M399
+ZRST    D0      D29
+RST     C0
+RST     C1
+SET     M200
+
+;; 1. 故障復歸鈕
+; 復歸鈕按下的瞬間 M238 ON 一次掃描
+LD      X27
+PLS     M238
+
+;; 2. 平層感測器
+; 任一平層感測器 ON
+LD      X12
+OR      X13
+OR      X14
+OR      X15
+OUT     M155
+
+; 兩個以上同時 ON → 感測器異常
+LD      X12
+LD      X13
+OR      X14
+OR      X15
+ANB
+LD      X13
+LD      X14
+OR      X15
+ANB
+ORB
+LD      X14
+AND     X15
+ORB
+OUT     M151
+
+; 在平層區：恰好一個平層感測器 ON
+LD      M155
+ANI     M151
+OUT     M150
+
+; 感測器所在樓層 → D2（都沒有 ON 則為 0）
+LD      M8000
+MOV     K0      D2
+
+LD      X12
+MOV     K1      D2
+
+LD      X13
+MOV     K2      D2
+
+LD      X14
+MOV     K3      D2
+
+LD      X15
+MOV     K4      D2
+
+;; 3. 樓層追蹤
+; D4 = 目前樓層 + 1，D5 = 目前樓層 - 1
+LD      M8000
+ADD     D0      K1      D4
+SUB     D0      K1      D5
+
+; 車廂在平層區，但不是目前記錄的樓層
+LD      M150
+AND<>   D2      D0
+OUT     M152
+
+; 運行中依序抵達下一層（上行 +1、下行 -1）→ 抵達新樓層
+LD      M222
+AND=    D2      D4
+LD      M223
+AND=    D2      D5
+ORB
+AND     M152
+AND     M207
+OUT     M153
+
+; 其他情況出現不同樓層 → 樓層順序錯誤（初始化、找樓層、故障中除外）
+LD      M152
+ANI     M153
+ANI     M200
+ANI     M201
+ANI     M210
+OUT     M154
+
+; 更新目前樓層
+LD      M153
+MOV     D2      D0
+
+;; 4. 運行時間限制（每抵達一層重新計時）
+; 高速：相鄰兩層之間超過 15 秒
+LD      Y0
+OR      Y1
+ANI     Y2
+ANI     M153
+OUT     T7      K150
+
+; 低速（找樓層 / 再平層）：超過 30 秒
+LD      Y0
+OR      Y1
+AND     Y2
+ANI     M153
+OUT     T8      K300
+
+;; 5. 故障偵測
+; 清除「本掃描已轉移」旗標
+LD      M8000
+RST     M232
+
+; 故障 1：安全迴路開路 / 緊急停止
+LDI     X24
+OUT     M241
+
+; 故障 5：運轉中關門到位消失，或開門到位與關門到位同時 ON
+LD      Y0
+OR      Y1
+ANI     X17
+LD      X16
+AND     X17
+ORB
+OUT     M242
+
+; 故障 4：運轉方向的極限開關動作
+LD      Y0
+ANI     X25
+LD      Y1
+ANI     X26
+ORB
+OUT     M243
+
+; 故障 3：平層感測器重複 / 樓層順序錯誤
+LD      M151
+OR      M154
+OUT     M244
+
+; 故障 2：運行逾時
+LD      T7
+OR      T8
+OUT     M245
+
+; 有任何故障
+LD      M241
+OR      M242
+OR      M243
+OR      M244
+OR      M245
+OUT     M240
+
+; 故障碼 → D11（優先權低的先寫，高的後寫蓋過去）
+LD      M245
+MOV     K2      D11
+
+LD      M244
+MOV     K3      D11
+
+LD      M243
+MOV     K4      D11
+
+LD      M242
+MOV     K5      D11
+
+LD      M241
+MOV     K1      D11
+
+; 進入故障狀態
+LD      M240
+ANI     M210
+ZRST    M200    M209
+SET     M210
+MOV     D11     D1
+SET     M232
+
+;; 6. 呼叫登記（正常服務中才接受）
+; 服務中：不是初始化、找樓層、故障
+LDI     M200
+ANI     M201
+ANI     M210
+OUT     M239
+
+; 車廂按鈕 1F~4F
+LD      X0
+AND     M239
+SET     M101
+
+LD      X1
+AND     M239
+SET     M102
+
+LD      X2
+AND     M239
+SET     M103
+
+LD      X3
+AND     M239
+SET     M104
+
+; 上呼 1F~3F
+LD      X4
+AND     M239
+SET     M111
+
+LD      X5
+AND     M239
+SET     M112
+
+LD      X6
+AND     M239
+SET     M113
+
+; 下呼 2F~4F
+LD      X7
+AND     M239
+SET     M122
+
+LD      X10
+AND     M239
+SET     M123
+
+LD      X11
+AND     M239
+SET     M124
+
+;; 7. 呼叫整理
+; 各樓有呼叫（車廂、上呼、下呼任一）
+LD      M101
+OR      M111
+OUT     M131
+
+LD      M102
+OR      M112
+OR      M122
+OUT     M132
+
+LD      M103
+OR      M113
+OR      M123
+OUT     M133
+
+LD      M104
+OR      M124
+OUT     M134
+
+; 目前樓層 D0 → M141~M144
+LD=     D0      K1
+OUT     M141
+
+LD=     D0      K2
+OUT     M142
+
+LD=     D0      K3
+OUT     M143
+
+LD=     D0      K4
+OUT     M144
+
+; 上方最近的呼叫樓層 → D6，下方最近的呼叫樓層 → D7（0 = 沒有）
+LD      M8000
+MOV     K0      D6
+MOV     K0      D7
+
+LD      M134
+AND>    K4      D0
+MOV     K4      D6
+
+LD      M133
+AND>    K3      D0
+MOV     K3      D6
+
+LD      M132
+AND>    K2      D0
+MOV     K2      D6
+
+LD      M131
+AND<    K1      D0
+MOV     K1      D7
+
+LD      M132
+AND<    K2      D0
+MOV     K2      D7
+
+LD      M133
+AND<    K3      D0
+MOV     K3      D7
+
+; 上方有呼叫
+LD>     D6      K0
+OUT     M160
+
+; 下方有呼叫
+LD>     D7      K0
+OUT     M161
+
+; 距離：D8 = 到上方呼叫，D9 = 到下方呼叫
+LD      M8000
+SUB     D6      D0      D8
+SUB     D0      D7      D9
+
+; 最近的呼叫在上方（距離相同也往上）
+LD      M160
+LDI     M161
+OR<=    D8      D9
+ANB
+OUT     M162
+
+; 本層有上呼
+LD      M141
+AND     M111
+LD      M142
+AND     M112
+ORB
+LD      M143
+AND     M113
+ORB
+OUT     M170
+
+; 本層有下呼
+LD      M142
+AND     M122
+LD      M143
+AND     M123
+ORB
+LD      M144
+AND     M124
+ORB
+OUT     M171
+
+; 本層有車廂呼叫
+LD      M141
+AND     M101
+LD      M142
+AND     M102
+ORB
+LD      M143
+AND     M103
+ORB
+LD      M144
+AND     M104
+ORB
+OUT     M172
+
+;; 8. 停在樓層：決定方向並服務本層呼叫
+; 停靠中（待命、開門中、開門停留、關門中、起動延遲）且在平層區
+LD      M202
+OR      M203
+OR      M204
+OR      M205
+OR      M206
+AND     M150
+OUT     M173
+
+; 待命且方向為上，但上方沒有呼叫、本層也沒有上呼
+LD      M173
+AND     M202
+AND     M220
+ANI     M160
+ANI     M170
+OUT     M174
+
+LD      M174
+RST     M220
+
+; → 本層有下呼或下方有呼叫就改為下
+LD      M171
+OR      M161
+AND     M174
+SET     M221
+
+; 待命且方向為下，但下方沒有呼叫、本層也沒有下呼
+LD      M173
+AND     M202
+AND     M221
+ANI     M161
+ANI     M171
+OUT     M175
+
+LD      M175
+RST     M221
+
+; → 本層有上呼或上方有呼叫就改為上
+LD      M170
+OR      M160
+AND     M175
+SET     M220
+
+; 沒有方向時
+LD      M173
+ANI     M220
+ANI     M221
+OUT     M176
+
+; 本層有上呼 → 上
+LD      M176
+AND     M170
+SET     M220
+
+; 本層有下呼 → 下
+LD      M176
+ANI     M170
+AND     M171
+SET     M221
+
+; 最近的呼叫在上方 → 上
+LD      M176
+ANI     M170
+ANI     M171
+AND     M162
+SET     M220
+
+; 否則下方有呼叫 → 下
+LD      M176
+ANI     M170
+ANI     M171
+ANI     M162
+AND     M161
+SET     M221
+
+; 服務本層：車廂呼叫 + 與方向相同的廳外呼叫
+LD      M220
+AND     M170
+LD      M221
+AND     M171
+ORB
+OR      M172
+AND     M173
+OUT     M230
+
+; 清除本層的車廂呼叫
+LD      M230
+AND     M141
+RST     M101
+
+LD      M230
+AND     M142
+RST     M102
+
+LD      M230
+AND     M143
+RST     M103
+
+LD      M230
+AND     M144
+RST     M104
+
+; 方向為上：清除本層上呼
+LD      M230
+AND     M220
+AND     M141
+RST     M111
+
+LD      M230
+AND     M220
+AND     M142
+RST     M112
+
+LD      M230
+AND     M220
+AND     M143
+RST     M113
+
+; 方向為下：清除本層下呼
+LD      M230
+AND     M221
+AND     M142
+RST     M122
+
+LD      M230
+AND     M221
+AND     M143
+RST     M123
+
+LD      M230
+AND     M221
+AND     M144
+RST     M124
+
+;; 9. 計時器與條件
+; 初始化等待輸入穩定 1 秒
+LD      M200
+OUT     T0      K10
+
+; 找樓層前關門逾時 8 秒
+LD      M201
+OUT     T1      K80
+
+; 開門逾時 8 秒
+LD      M203
+OUT     T2      K80
+
+; 開門停留暫停：開門鈕、遮擋、超載、本層再呼叫
+LD      X20
+OR      X22
+OR      X23
+OR      M230
+AND     M204
+OUT     M229
+
+; 開門停留 3 秒（暫停時重新計時）
+LD      M204
+ANI     M229
+OUT     T3      K30
+
+; 關門逾時 8 秒
+LD      M205
+OUT     T4      K80
+
+; 起動延遲 0.5 秒
+LD      M206
+OUT     T5      K5
+
+; 煞車延遲 0.5 秒
+LD      M208
+OUT     T6      K5
+
+; 重新開門要求：遮擋、開門鈕、超載、本層再呼叫
+LD      X22
+OR      X20
+OR      X23
+OR      M230
+OUT     M235
+
+; 需要再平層：待命時離開平層區，或停車延遲後不在平層區
+LD      M202
+LD      M208
+AND     T6
+ORB
+ANI     M150
+OUT     M236
+
+; 原運轉方向為下（再平層要反向）
+LD      M223
+OUT     M237
+
+;; 10-1. 狀態：初始化 M200
+LD      M200
+RST     M220
+RST     M221
+RST     C0
+RST     C1
+
+; 等 1 秒
+LD      M200
+AND     T0
+ANI     M232
+OUT     M250
+
+LD      M250
+RST     M200
+SET     M232
+RST     M228
+
+; 在平層區 → 記錄樓層
+LD      M250
+AND     M150
+MOV     D2      D0
+
+; 門已關 → 待命
+LD      M250
+AND     M150
+AND     X17
+SET     M202
+
+; 門沒關 → 開門停留（之後自動關門）
+LD      M250
+AND     M150
+ANI     X17
+SET     M204
+
+; 不在平層區 → 找樓層
+LD      M250
+ANI     M150
+MOV     K0      D0
+RST     M222
+RST     M223
+SET     M201
+
+;; 10-2. 狀態：找樓層 M201
+; 找樓層前關門逾時 → 故障 7
+LD      M201
+ANI     X17
+AND     T1
+ANI     M232
+RST     M201
+SET     M210
+MOV     K7      D1
+SET     M232
+
+; 找到樓層 → 停車，停妥後開門
+LD      M201
+AND     X17
+AND     M150
+ANI     M232
+MOV     D2      D0
+SET     M228
+SET     M208
+RST     M201
+SET     M232
+
+; 找樓層方向：往下
+LD      M201
+AND     X17
+ANI     M150
+ANI     M222
+ANI     M223
+AND     X26
+SET     M223
+
+; 已壓到下極限 → 往上
+LD      M201
+AND     X17
+ANI     M150
+ANI     M222
+ANI     M223
+ANI     X26
+SET     M222
+
+;; 10-3. 狀態：待命 M202
+LD      M202
+RST     C0
+
+; 需要再平層但已連續 3 次 → 故障 3
+LD      M236
+AND     C1
+ANI     M232
+RST     M202
+RST     M208
+SET     M210
+MOV     K3      D1
+SET     M232
+
+; 需要再平層（計次）
+LD      M236
+ANI     C1
+ANI     M232
+OUT     M252
+
+LD      M252
+OUT     C1      K3
+SET     M209
+RST     M202
+RST     M208
+SET     M232
+
+; 再平層方向與原運轉方向相反：原下 → 上
+LD      M252
+AND     M237
+SET     M222
+RST     M223
+
+; 原上 → 下
+LD      M252
+ANI     M237
+SET     M223
+RST     M222
+
+; 本層有呼叫、開門鈕、超載、找樓層完成 → 開門
+LD      M230
+OR      X20
+OR      X23
+OR      M228
+AND     M202
+AND     M150
+ANI     M232
+RST     M228
+SET     M203
+RST     M202
+SET     M232
+
+; 門沒有關妥 → 關門
+LD      M202
+AND     M150
+ANI     X17
+ANI     M232
+SET     M205
+RST     M202
+SET     M232
+
+; 有方向 → 起動延遲
+LD      M220
+OR      M221
+AND     M202
+AND     M150
+AND     X17
+ANI     M232
+SET     M206
+RST     M202
+SET     M232
+
+;; 10-4. 狀態：開門中 M203
+; 開門到位 → 開門停留
+LD      M203
+AND     X16
+ANI     M232
+SET     M204
+RST     M203
+SET     M232
+
+; 開門逾時 → 故障 6
+LD      M203
+AND     T2
+ANI     M232
+RST     M203
+SET     M210
+MOV     K6      D1
+SET     M232
+
+;; 10-5. 狀態：開門停留 M204
+LD      M204
+RST     C1
+
+; 關門鈕或停留時間到（且無暫停條件）→ 關門
+LD      X21
+OR      T3
+AND     M204
+ANI     M229
+ANI     M232
+SET     M205
+RST     M204
+SET     M232
+
+;; 10-6. 狀態：關門中 M205
+; 遮擋、開門鈕、超載、本層再呼叫 → 重新開門
+LD      M205
+AND     M235
+ANI     M232
+SET     M203
+RST     M205
+SET     M232
+
+; 關門到位 → 待命
+LD      M205
+AND     X17
+ANI     M232
+SET     M202
+RST     M205
+SET     M232
+RST     C0
+
+; 關門逾時（計次）
+LD      M205
+AND     T4
+ANI     M232
+OUT     M234
+
+LD      M234
+OUT     C0      K3
+
+; 連續 3 次 → 故障 7
+LD      M234
+AND     C0
+RST     M205
+SET     M210
+MOV     K7      D1
+SET     M232
+
+; 未滿 3 次 → 重新開門再試
+LD      M234
+ANI     C0
+SET     M203
+RST     M205
+SET     M232
+
+;; 10-7. 狀態：起動延遲 M206
+; 本層有呼叫、開門鈕、超載 → 開門
+LD      M230
+OR      X20
+OR      X23
+AND     M206
+ANI     M232
+SET     M203
+RST     M206
+SET     M232
+
+; 門沒關妥、離開平層區或沒有方向 → 回待命
+LDI     X17
+ORI     M150
+LDI     M220
+ANI     M221
+ORB
+AND     M206
+ANI     M232
+SET     M202
+RST     M206
+SET     M232
+
+; 要起動的方向極限已動作 → 故障 4
+LD      M220
+ANI     X25
+LD      M221
+ANI     X26
+ORB
+AND     M206
+AND     T5
+ANI     M232
+RST     M206
+SET     M210
+MOV     K4      D1
+SET     M232
+
+; 延遲到 → 運行
+LD      M206
+AND     T5
+ANI     M232
+OUT     M251
+
+LD      M251
+SET     M207
+RST     M206
+SET     M232
+RST     C1
+
+; 運轉方向 = 服務方向
+LD      M251
+AND     M220
+SET     M222
+RST     M223
+
+LD      M251
+AND     M221
+SET     M223
+RST     M222
+
+;; 10-8. 狀態：運行 M207
+; 抵達新樓層：車廂呼叫、同方向廳外呼叫、或前方已無呼叫 → 停
+LD      M222
+LD      M170
+ORI     M160
+ANB
+LD      M223
+LD      M171
+ORI     M161
+ANB
+ORB
+OR      M172
+AND     M153
+AND     M207
+OUT     M231
+
+LD      M231
+ANI     M232
+SET     M208
+RST     M207
+SET     M232
+
+;; 10-9. 狀態：停車 M208
+; 煞車延遲到且在平層區 → 待命（不在平層區由 M236 處理再平層）
+LD      M208
+AND     T6
+AND     M150
+ANI     M232
+SET     M202
+RST     M208
+SET     M232
+
+;; 10-10. 狀態：再平層 M209
+; 回到平層區 → 停車
+LD      M209
+AND     M150
+ANI     M232
+SET     M208
+RST     M209
+SET     M232
+
+;; 10-11. 狀態：故障 M210
+; 故障 1（安全迴路）恢復 → 自動重新初始化
+LD      M210
+AND=    D1      K1
+AND     X24
+ANI     M232
+MOV     K0      D1
+SET     M200
+RST     M210
+SET     M232
+
+; 其他故障 → 按復歸鈕重新初始化
+LD      M210
+AND<>   D1      K1
+AND     M238
+AND     X24
+ANI     M232
+MOV     K0      D1
+SET     M200
+RST     M210
+SET     M232
+
+;; 11. 故障中：清除所有呼叫與方向
+LD      M210
+ZRST    M100    M129
+RST     M220
+RST     M221
+RST     M228
+
+;; 12. 輸出
+; 馬達運轉的狀態：運行、再平層、找樓層（門已關）
+LD      M207
+OR      M209
+LD      M201
+AND     X17
+ORB
+OUT     M253
+
+LD      M253
+AND     M222
+OUT     M224
+
+LD      M253
+AND     M223
+OUT     M225
+
+; 馬達上升：安全迴路、門關妥、上極限正常、非故障、與下降互鎖
+LD      M224
+AND     X24
+AND     X17
+AND     X25
+ANI     M210
+ANI     Y1
+OUT     Y0
+
+; 馬達下降
+LD      M225
+AND     X24
+AND     X17
+AND     X26
+ANI     M210
+ANI     Y0
+OUT     Y1
+
+; 低速（找樓層、再平層）
+LD      M201
+OR      M209
+LD      Y0
+OR      Y1
+ANB
+OUT     Y2
+
+; 開門：開門中、在平層區、馬達停止、未開到位
+LD      M203
+AND     M150
+AND     X24
+ANI     Y0
+ANI     Y1
+ANI     X16
+OUT     Y3
+
+; 找樓層時先關門（有障礙暫停）
+LD      M201
+ANI     X17
+ANI     X22
+OUT     M227
+
+; 關門
+LD      M205
+OR      M227
+AND     X24
+ANI     Y3
+ANI     X17
+OUT     Y4
+
+; 服務中
+LDI     M200
+ANI     M201
+ANI     M210
+OUT     Y27
+
+; 方向燈
+LD      Y27
+AND     M220
+OUT     Y5
+
+LD      Y27
+AND     M221
+OUT     Y6
+
+; 故障燈
+LD      M210
+OUT     Y7
+
+; 車廂按鈕燈 1F~4F
+LD      M101
+OUT     Y10
+
+LD      M102
+OUT     Y11
+
+LD      M103
+OUT     Y12
+
+LD      M104
+OUT     Y13
+
+; 上呼燈 1F~3F
+LD      M111
+OUT     Y14
+
+LD      M112
+OUT     Y15
+
+LD      M113
+OUT     Y16
+
+; 下呼燈 2F~4F
+LD      M122
+OUT     Y17
+
+LD      M123
+OUT     Y20
+
+LD      M124
+OUT     Y21
+
+; 超載蜂鳴器
+LD      X23
+AND     Y27
+OUT     Y22
+
+; 樓層顯示：D0 → M300~M303 → BCD 輸出（接 7 段解碼器）
+LD      M8000
+MOV     D0      K1M300
+
+LD      M300
+OUT     Y23
+
+LD      M301
+OUT     Y24
+
+LD      M302
+OUT     Y25
+
+LD      M303
+OUT     Y26
+
+END

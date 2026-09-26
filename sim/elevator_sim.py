@@ -1,16 +1,22 @@
 """電梯 PLC 模擬器。
 
-以 ctypes 載入 build.sh 編譯出的 libelevator_sim.so（真正的 ST 程式經 matiec
-轉成的 C），每 10 ms 掃描一次；同時用簡單的物理模型模擬車廂、門與各種感測器，
-並在每次掃描檢查安全條件（上下互鎖、門未關不可運轉、不在平層區不可開門……）。
+可以驅動三種 PLC 程式，每 10 ms 掃描一次：
+  main   實機 ST 程式 PRG_Elevator（matiec 轉成 C，以 ctypes 載入）
+  testn  測試用 ST 程式 PRG_TestN（2~8 層）
+  fx3u   三菱 FX3U 階梯圖 fx3u/elevator_fx3u.txt（sim/fx3u.py 模擬執行）
+同時用簡單的物理模型模擬車廂、門與各種感測器，並在每次掃描檢查安全條件
+（上下互鎖、門未關不可運轉、不在平層區不可開門……）。
 """
 
 import ctypes
 import os
 import subprocess
 
+import fx3u
+
 SIM_DIR = os.path.dirname(os.path.abspath(__file__))
 LIB_PATH = os.path.join(SIM_DIR, "build", "libelevator_sim.so")
+FX3U_PATH = os.path.join(os.path.dirname(SIM_DIR), "fx3u", "elevator_fx3u.txt")
 
 SCAN_MS = 10
 DT = SCAN_MS / 1000.0
@@ -21,6 +27,7 @@ STATES = ["INIT", "HOMING", "IDLE", "DOOR_OPENING", "DOOR_OPEN", "DOOR_CLOSING",
 DIRS = ["NONE", "UP", "DOWN"]
 
 _lib = None
+_fx3u_program = None
 
 
 def load_lib(rebuild=True):
@@ -33,6 +40,15 @@ def load_lib(rebuild=True):
         for name in ("elevator_state", "elevator_dir", "testn_state", "testn_dir"):
             getattr(_lib, name).restype = ctypes.c_int
     return _lib
+
+
+def load_fx3u():
+    """解析、檢查並編譯 FX3U 指令表（只做一次）。"""
+    global _fx3u_program
+    if _fx3u_program is None:
+        with open(FX3U_PATH, encoding="utf-8") as f:
+            _fx3u_program = fx3u.Program(f.read())
+    return _fx3u_program
 
 
 class InvariantError(AssertionError):
@@ -89,6 +105,9 @@ class MainIO:
             self.sensor[i].value = inp["sensor"][i]
         for k, v in self.i_bits.items():
             v.value = inp[k]
+
+    def scan(self, ms):
+        self.lib.plc_scan(ms)
 
     def read(self):
         out = {k: bool(v.value) for k, v in self.q_bits.items()}
@@ -152,6 +171,9 @@ class TestNIO:
         for k, v in self.i_bits.items():
             v.value = inp[k]
 
+    def scan(self, ms):
+        self.lib.plc_scan(ms)
+
     def read(self):
         out = {k: bool(v.value) for k, v in self.q_bits.items()}
         n = self.n_floors
@@ -168,6 +190,81 @@ class TestNIO:
 
     def direction(self):
         return DIRS[self.lib.testn_dir()]
+
+
+def _o(addr):
+    """三菱 X/Y 編號（8 進位字串）→ 陣列索引。"""
+    return int(addr, 8)
+
+
+class FxIO:
+    """三菱 FX3U 階梯圖 fx3u/elevator_fx3u.txt 的 I/O（X0~X27、Y0~Y27）。"""
+
+    n_floors = 4
+
+    def __init__(self):
+        self.plc = fx3u.FX3U(load_fx3u())
+        self.car_btn = [_o("0"), _o("1"), _o("2"), _o("3")]
+        self.up_btn = [_o("4"), _o("5"), _o("6"), None]
+        self.dn_btn = [None, _o("7"), _o("10"), _o("11")]
+        self.sensor = [_o("12"), _o("13"), _o("14"), _o("15")]
+        self.i_bits = {
+            "door_open_ls": _o("16"), "door_closed_ls": _o("17"),
+            "door_open_btn": _o("20"), "door_close_btn": _o("21"),
+            "obstruct": _o("22"), "overload": _o("23"),
+            "safety_ok": _o("24"), "up_limit_ok": _o("25"),
+            "dn_limit_ok": _o("26"), "fault_reset": _o("27"),
+        }
+        self.q_bits = {
+            "motor_up": _o("0"), "motor_down": _o("1"), "low_speed": _o("2"),
+            "door_open": _o("3"), "door_close": _o("4"),
+            "dir_up": _o("5"), "dir_dn": _o("6"), "fault_lamp": _o("7"),
+            "buzzer": _o("22"), "in_service": _o("27"),
+        }
+        self.car_lamp = [_o("10"), _o("11"), _o("12"), _o("13")]
+        self.up_lamp = [_o("14"), _o("15"), _o("16"), None]
+        self.dn_lamp = [None, _o("17"), _o("20"), _o("21")]
+        self.bcd = [_o("23"), _o("24"), _o("25"), _o("26")]
+
+    def scan(self, ms):
+        self.plc.scan(ms)
+
+    def write(self, inp):
+        X = self.plc.X
+        for i in range(self.n_floors):
+            X[self.car_btn[i]] = bool(inp["car"][i])
+            if self.up_btn[i] is not None:
+                X[self.up_btn[i]] = bool(inp["up"][i])
+            if self.dn_btn[i] is not None:
+                X[self.dn_btn[i]] = bool(inp["dn"][i])
+            X[self.sensor[i]] = bool(inp["sensor"][i])
+        for k, idx in self.i_bits.items():
+            X[idx] = bool(inp[k])
+
+    def read(self):
+        Y = self.plc.Y
+        out = {k: Y[idx] for k, idx in self.q_bits.items()}
+        n = self.n_floors
+        out["car_lamp"] = [Y[self.car_lamp[i]] for i in range(n)]
+        out["up_lamp"] = [Y[self.up_lamp[i]] if self.up_lamp[i] is not None else False for i in range(n)]
+        out["dn_lamp"] = [Y[self.dn_lamp[i]] if self.dn_lamp[i] is not None else False for i in range(n)]
+        out["floor"] = self.plc.D[0]
+        out["fault_code"] = self.plc.D[1]
+        out["bcd_floor"] = sum(1 << b for b in range(4) if Y[self.bcd[b]])
+        return out
+
+    def state(self):
+        on = [i for i in range(len(STATES)) if self.plc.M[200 + i]]
+        if len(on) != 1:
+            raise InvariantError("狀態 M200~M210 應該恰好一個 ON，實際：%s"
+                                 % ["M%d" % (200 + i) for i in on])
+        return STATES[on[0]]
+
+    def direction(self):
+        up, dn = self.plc.M[220], self.plc.M[221]
+        if up and dn:
+            raise InvariantError("方向 M220、M221 同時 ON")
+        return "UP" if up else ("DOWN" if dn else "NONE")
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +365,14 @@ class Plant:
 class Sim:
     def __init__(self, program="main", n_floors=4, start_floor=1, start_pos=None,
                  door=0.0, **plant_kw):
-        lib = load_lib(rebuild=False)
-        lib.plc_init()
-        if program == "main":
-            self.io = MainIO(lib)
-            if n_floors != 4:
-                raise ValueError("PRG_Elevator 固定 4 層")
+        if program in ("main", "fx3u") and n_floors != 4:
+            raise ValueError("%s 固定 4 層" % program)
+        if program == "fx3u":
+            self.io = FxIO()
         else:
-            self.io = TestNIO(lib, n_floors)
+            lib = load_lib(rebuild=False)
+            lib.plc_init()
+            self.io = MainIO(lib) if program == "main" else TestNIO(lib, n_floors)
         self.n = n_floors
         if start_pos is None:
             start_pos = (start_floor - 1) * plant_kw.get("floor_height", 3000.0)
@@ -328,7 +425,7 @@ class Sim:
     # ---- 執行 ----
     def step(self):
         self.io.write(self._inputs())
-        self.io.lib.plc_scan(SCAN_MS)
+        self.io.scan(SCAN_MS)
         out = self.io.read()
         self.out = out
         self.state = self.io.state()

@@ -1,5 +1,7 @@
 """電梯 PLC 程式模擬測試。
 
+4 層的測試同時跑兩個版本：ST 實機程式（…ST）與三菱 FX3U 階梯圖（…FX3U）。
+
 執行：  python3 -m unittest -v        （在 sim/ 目錄下）
 第一次執行會自動下載並編譯 matiec，約需 1~2 分鐘。
 """
@@ -8,6 +10,7 @@ import random
 import unittest
 
 import elevator_sim as es
+import fx3u
 
 H = 3000.0  # 樓高 (mm)
 
@@ -32,13 +35,27 @@ def settled(s):
     return s.state == "IDLE" and call_lamps_off(s) and s.plant.door <= 0.0
 
 
+class Backend:
+    """測試混入類別：PROGRAM 決定要測哪一個版本。"""
+
+    PROGRAM = "main"
+
+    def sim(self, **kw):
+        return es.Sim(program=self.PROGRAM, **kw)
+
+    def idle(self, **kw):
+        s = self.sim(**kw)
+        s.wait_state("IDLE", 5)
+        return s
+
+
 # ---------------------------------------------------------------------------
 # 一般運轉
 # ---------------------------------------------------------------------------
-class TestNormalService(unittest.TestCase):
+class NormalService(Backend):
 
     def test_power_up_at_floor(self):
-        s = es.Sim(start_floor=2)
+        s = self.sim(start_floor=2)
         s.run(0.5)
         self.assertEqual(s.state, "INIT")
         self.assertFalse(s.out["in_service"])
@@ -52,7 +69,7 @@ class TestNormalService(unittest.TestCase):
         self.assertAlmostEqual(s.plant.pos, H)
 
     def test_car_call(self):
-        s = idle_sim()
+        s = self.idle()
         s.press("car", 4)
         s.run(0.05)
         self.assertTrue(s.out["car_lamp"][3])
@@ -64,20 +81,20 @@ class TestNormalService(unittest.TestCase):
         self.assertEqual(s.out["floor"], 4)
 
     def test_hall_down_call_announces_down(self):
-        s = idle_sim()
+        s = self.idle()
         s.press("dn", 4)
         _, floor, up, dn = s.wait_door_open_at(4, 30)
         self.assertEqual((floor, up, dn), (4, False, True))
 
     def test_hall_up_call_announces_up(self):
-        s = idle_sim(start_floor=3)
+        s = self.idle(start_floor=3)
         s.press("up", 1)
         _, floor, up, dn = s.wait_door_open_at(1, 30)
         self.assertEqual((floor, up, dn), (1, True, False))
 
     def test_collective_up_trip(self):
         """上行途中：同方向的上呼順路停，反方向的下呼等回程才停。"""
-        s = idle_sim()
+        s = self.idle()
         s.press("car", 4)
         s.run_until(lambda s: s.state == "RUN" and s.plant.pos > 500, 10)
         s.press("up", 3)
@@ -90,7 +107,7 @@ class TestNormalService(unittest.TestCase):
         self.assertEqual(ups[2], (False, True))
 
     def test_collective_down_trip(self):
-        s = idle_sim(start_floor=4)
+        s = self.idle(start_floor=4)
         s.press("car", 1)
         s.run_until(lambda s: s.state == "RUN" and s.plant.pos < 3 * H - 500, 10)
         s.press("dn", 2)
@@ -104,7 +121,7 @@ class TestNormalService(unittest.TestCase):
 
     def test_no_stop_without_call(self):
         """中間樓層沒有呼叫時直接通過。"""
-        s = idle_sim()
+        s = self.idle()
         s.press("car", 4)
         stops = []
         s.listeners.append(lambda s: s.state == "STOPPING" and (not stops or stops[-1] != s.out["floor"])
@@ -114,7 +131,7 @@ class TestNormalService(unittest.TestCase):
 
     def test_both_hall_calls_same_floor(self):
         """同一樓上下都有人：先服務上行，關門後反向再開門服務下行。"""
-        s = idle_sim()
+        s = self.idle()
         s.press("up", 2)
         s.press("dn", 2)
         s.run_until(settled, 60, "all served")
@@ -122,21 +139,21 @@ class TestNormalService(unittest.TestCase):
                          [(2, True, False), (2, False, True)])
 
     def test_nearest_call_first(self):
-        s = idle_sim(start_floor=2)
+        s = self.idle(start_floor=2)
         s.press("up", 1)
         s.press("dn", 4)
         s.run_until(settled, 90, "all served")
         self.assertEqual(s.served_floors(), [1, 4])
 
     def test_equal_distance_goes_up_first(self):
-        s = idle_sim(start_floor=2)
+        s = self.idle(start_floor=2)
         s.press("up", 1)
         s.press("dn", 3)
         s.run_until(settled, 90, "all served")
         self.assertEqual(s.served_floors(), [3, 1])
 
     def test_call_at_current_floor_opens_door(self):
-        s = idle_sim(start_floor=2)
+        s = self.idle(start_floor=2)
         s.press("up", 2)
         s.run(0.05)
         self.assertFalse(s.out["up_lamp"][1])     # 立即服務，燈不留著
@@ -146,13 +163,13 @@ class TestNormalService(unittest.TestCase):
         self.assertEqual(s.plant.pos, H)          # 沒有移動
 
     def test_door_open_button_when_idle(self):
-        s = idle_sim(start_floor=3)
+        s = self.idle(start_floor=3)
         s.press("door_open_btn")
         s.wait_door_open_at(3, 5)
         s.run_until(settled, 15, "door closed")
 
     def test_same_floor_car_button_reopens_closing_door(self):
-        s = idle_sim(start_floor=2)
+        s = self.idle(start_floor=2)
         s.press("car", 2)
         s.wait_state("DOOR_CLOSING", 10)
         s.run(0.5)
@@ -162,7 +179,7 @@ class TestNormalService(unittest.TestCase):
         self.assertFalse(s.out["car_lamp"][1])
 
     def test_calls_blocked_until_in_service(self):
-        s = es.Sim(start_floor=1)
+        s = self.sim(start_floor=1)
         s.press("car", 3, duration=0.5)
         s.run(0.6)
         self.assertFalse(s.out["car_lamp"][2])
@@ -175,10 +192,10 @@ class TestNormalService(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 門
 # ---------------------------------------------------------------------------
-class TestDoor(unittest.TestCase):
+class Door(Backend):
 
     def open_door(self, floor=1):
-        s = idle_sim(start_floor=floor)
+        s = self.idle(start_floor=floor)
         s.press("door_open_btn")
         s.wait_state("DOOR_OPEN", 5)
         return s
@@ -227,6 +244,9 @@ class TestDoor(unittest.TestCase):
     def test_overload_keeps_door_open(self):
         s = self.open_door()
         s.level_inputs["overload"] = True
+        closing = []
+        s.listeners.append(lambda s: s.level_inputs["overload"] and s.out["door_close"]
+                           and closing.append(s.t))
         s.press("car", 3)
         s.run(20)
         self.assertEqual(s.state, "DOOR_OPEN")
@@ -235,6 +255,7 @@ class TestDoor(unittest.TestCase):
         s.press("door_close_btn")                 # 超載時關門鈕無效
         s.run(1)
         self.assertEqual(s.state, "DOOR_OPEN")
+        self.assertEqual(closing, [])
         s.level_inputs["overload"] = False
         s.run(0.05)
         self.assertFalse(s.out["buzzer"])
@@ -268,8 +289,30 @@ class TestDoor(unittest.TestCase):
         s.run_until(settled, 20, "recovered")
         self.assertEqual(s.out["fault_code"], 0)
 
+    def test_door_open_output_needs_floor_zone(self):
+        """開門中平層訊號消失（感測器故障）→ 開門輸出立即停止（輸出段的互鎖）。"""
+        s = self.idle(start_floor=2)
+        s.press("up", 2)
+        s.run_until(lambda s: s.out["door_open"] and s.plant.door > 0.3, 5)
+        s.plant.dead_sensors = {2}
+        s.run(0.01)
+        self.assertFalse(s.out["door_open"])
+        s.run(1)
+        self.assertFalse(s.out["door_open"])
+        self.assertLess(s.plant.door, 1.0)
+
+    def test_close_button_ignored_while_obstructed(self):
+        s = self.open_door()
+        s.level_inputs["obstruct"] = True
+        closing = []
+        s.listeners.append(lambda s: s.out["door_close"] and closing.append(s.t))
+        s.press("door_close_btn", duration=1.0)
+        s.run(5)
+        self.assertEqual(closing, [])             # 連一瞬間都不可以關門
+        self.assertEqual(s.state, "DOOR_OPEN")
+
     def test_open_timeout_fault(self):
-        s = idle_sim(start_floor=2)
+        s = self.idle(start_floor=2)
         s.plant.door_cannot_open = True
         s.press("up", 2)
         s.wait_state("FAULT", 15)
@@ -279,10 +322,10 @@ class TestDoor(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 安全與故障
 # ---------------------------------------------------------------------------
-class TestSafety(unittest.TestCase):
+class Safety(Backend):
 
     def test_safety_circuit_open_during_run(self):
-        s = idle_sim()
+        s = self.idle()
         s.press("car", 4)
         s.run_until(lambda s: s.state == "RUN" and s.plant.pos > 1.5 * H, 20)
         s.level_inputs["safety_ok"] = False
@@ -305,7 +348,7 @@ class TestSafety(unittest.TestCase):
         s.run_until(settled, 20, "idle")
 
     def test_power_up_between_floors_homes_down(self):
-        s = es.Sim(start_pos=1.5 * H)
+        s = self.sim(start_pos=1.5 * H)
         s.wait_state("HOMING", 2)
         s.press("car", 4)
         s.run(0.5)
@@ -316,7 +359,7 @@ class TestSafety(unittest.TestCase):
         s.run_until(settled, 20, "idle")
 
     def test_power_up_between_floors_with_door_open(self):
-        s = es.Sim(start_pos=2.5 * H, door=0.5)
+        s = self.sim(start_pos=2.5 * H, door=0.5)
         s.wait_state("HOMING", 2)
         s.run(0.05)
         self.assertTrue(s.out["door_close"])
@@ -328,12 +371,12 @@ class TestSafety(unittest.TestCase):
         s.wait_door_open_at(3, 30)
 
     def test_power_up_at_floor_with_door_open(self):
-        s = es.Sim(start_floor=3, door=1.0)
+        s = self.sim(start_floor=3, door=1.0)
         s.wait_state("DOOR_OPEN", 2)
         s.run_until(settled, 15, "door closed")
 
     def test_homing_up_from_bottom_limit(self):
-        s = es.Sim(start_pos=-200.0)
+        s = self.sim(start_pos=-200.0)
         s.check_travel_limits = False
         s.wait_state("HOMING", 2)
         s.run(0.05)
@@ -341,7 +384,7 @@ class TestSafety(unittest.TestCase):
         s.wait_door_open_at(1, 10)
 
     def test_run_timeout(self):
-        s = idle_sim()
+        s = self.idle()
         s.plant.motor_stalled = True
         s.press("car", 3)
         t_run = s.wait_state("RUN", 5)
@@ -355,13 +398,13 @@ class TestSafety(unittest.TestCase):
 
     def test_run_timer_restarts_each_floor(self):
         """整趟 1F→4F 超過 tRunTimeout 也不會誤判，因為每到一層就重新計時。"""
-        s = idle_sim(hi_speed=250.0)              # 每層 12 秒，整趟 36 秒
+        s = self.idle(hi_speed=250.0)              # 每層 12 秒，整趟 36 秒
         s.press("car", 4)
         s.wait_door_open_at(4, 60)
         self.assertEqual(s.out["fault_code"], 0)
 
     def test_skipped_floor_sensor(self):
-        s = idle_sim()
+        s = self.idle()
         s.plant.dead_sensors = {3}
         s.press("car", 4)
         s.wait_state("FAULT", 30)
@@ -369,14 +412,14 @@ class TestSafety(unittest.TestCase):
         self.assertFalse(s.out["motor_up"])
 
     def test_two_floor_sensors_on(self):
-        s = idle_sim()
+        s = self.idle()
         s.plant.stuck_sensors = {3}
         s.run(0.05)
         self.assertEqual(s.state, "FAULT")
         self.assertEqual(s.out["fault_code"], 3)
 
     def test_overtravel_top_limit(self):
-        s = idle_sim(start_floor=3)
+        s = self.idle(start_floor=3)
         s.plant.dead_sensors = {4}
         s.check_travel_limits = False
         s.press("car", 4)
@@ -386,7 +429,7 @@ class TestSafety(unittest.TestCase):
         self.assertLess(s.plant.pos, 3 * H + 200)
 
     def test_door_lock_lost_during_run(self):
-        s = idle_sim()
+        s = self.idle()
         s.press("car", 3)
         s.run_until(lambda s: s.state == "RUN" and s.plant.pos > 1000, 20)
         s.plant.door_lock_broken = True
@@ -395,15 +438,28 @@ class TestSafety(unittest.TestCase):
         self.assertEqual(s.out["fault_code"], 5)
         self.assertFalse(s.out["motor_up"])
 
+    def test_fault_priority_safety_first(self):
+        """同一次掃描發生兩種故障時記錄優先權高的（安全迴路 → 可自動恢復）。"""
+        s = self.idle()
+        s.press("car", 3)
+        s.run_until(lambda s: s.state == "RUN" and s.plant.pos > 1000, 20)
+        s.level_inputs["safety_ok"] = False
+        s.plant.door_lock_broken = True
+        s.run(0.01)
+        self.assertEqual(s.out["fault_code"], 1)
+        s.plant.door_lock_broken = False
+        s.level_inputs["safety_ok"] = True
+        s.wait_state("HOMING", 3)
+
     def test_door_limit_switches_both_on(self):
-        s = idle_sim()
+        s = self.idle()
         s.plant.open_ls_stuck = True
         s.run(0.02)
         self.assertEqual(s.state, "FAULT")
         self.assertEqual(s.out["fault_code"], 5)
 
     def test_homing_timeout_uses_slow_limit(self):
-        s = es.Sim(start_pos=1.5 * H)
+        s = self.sim(start_pos=1.5 * H)
         s.plant.motor_stalled = True
         t_home = s.wait_state("HOMING", 2)
         t_fault = s.wait_state("FAULT", 40)
@@ -411,7 +467,7 @@ class TestSafety(unittest.TestCase):
         self.assertAlmostEqual(t_fault - t_home, 30.0, delta=0.1)
 
     def test_limit_switch_blocks_start(self):
-        s = idle_sim(start_floor=2)
+        s = self.idle(start_floor=2)
         s.plant.limit_tripped = {"up"}            # 上極限開關誤動作
         s.check_travel_limits = False
         s.press("car", 4)
@@ -420,7 +476,7 @@ class TestSafety(unittest.TestCase):
         self.assertEqual(s.plant.pos, H)          # 沒有起動
 
     def test_relevel_after_overshoot(self):
-        s = idle_sim(coast_hi=80.0)               # 滑行超出平層區（±30 mm）
+        s = self.idle(coast_hi=80.0)               # 滑行超出平層區（±30 mm）
         s.press("car", 3)
         s.wait_door_open_at(3, 30)
         states = [st for _, st in s.state_log]
@@ -428,7 +484,7 @@ class TestSafety(unittest.TestCase):
         self.assertLessEqual(abs(s.plant.pos - 2 * H), 30.0)
 
     def test_relevel_gives_up(self):
-        s = idle_sim(coast_hi=80.0, coast_lo=80.0)
+        s = self.idle(coast_hi=80.0, coast_lo=80.0)
         s.press("car", 3)
         s.wait_state("FAULT", 60)
         self.assertEqual(s.out["fault_code"], 3)
@@ -476,7 +532,7 @@ class Passenger:
         self.press_car_at = None
 
 
-class TestRandomTraffic(unittest.TestCase):
+class Traffic:
 
     def run_traffic(self, program, n_floors, minutes, seed, rate_per_min):
         rng = random.Random(seed)
@@ -549,15 +605,94 @@ class TestRandomTraffic(unittest.TestCase):
         trips = [p.t_done - p.t_arrive for p in people]
         return len(people), max(waits), max(trips), sum(trips) / len(trips)
 
+
+class RandomTraffic4(Backend, Traffic):
+
     def test_random_traffic_4_floors(self):
-        n, max_wait, max_trip, avg = self.run_traffic("main", 4, minutes=30, seed=1, rate_per_min=3)
+        n, max_wait, max_trip, avg = self.run_traffic(self.PROGRAM, 4, minutes=30, seed=1, rate_per_min=3)
         self.assertGreater(n, 50)
         self.assertLess(max_trip, 240)
+
+
+class TestRandomTraffic7Floors(Traffic, unittest.TestCase):
 
     def test_random_traffic_7_floors(self):
         n, max_wait, max_trip, avg = self.run_traffic("testn", 7, minutes=20, seed=7, rate_per_min=2)
         self.assertGreater(n, 25)
         self.assertLess(max_trip, 300)
+
+
+# ---------------------------------------------------------------------------
+# FX3U 指令表檢查
+# ---------------------------------------------------------------------------
+class TestLadderLint(unittest.TestCase):
+
+    def setUp(self):
+        with open(es.FX3U_PATH, encoding="utf-8") as f:
+            self.text = f.read()
+
+    def problems(self, extra):
+        text = self.text.replace("\nEND", "\n" + extra + "\nEND")
+        return fx3u.lint(fx3u.parse(text))
+
+    def test_program_is_clean(self):
+        self.assertEqual(fx3u.lint(fx3u.parse(self.text)), [])
+
+    def test_double_coil_detected(self):
+        self.assertTrue(any("雙重線圈 Y0" in p for p in self.problems("LD X0\nOUT Y0")))
+
+    def test_typo_device_detected(self):
+        self.assertTrue(any("M233" in p for p in self.problems("LD M233\nOUT Y26")))
+
+    def test_latched_range_rejected(self):
+        self.assertTrue(any("M500" in p for p in self.problems("LD X0\nSET M500")))
+
+    def test_octal_numbers(self):
+        self.assertTrue(any("8 進位" in p for p in self.problems("LD X8\nOUT M399")))
+
+
+    def test_rendered_ladder_up_to_date(self):
+        """fx3u/ladder.html 與 fx3u/ladder/*.svg 必須和指令表一致。"""
+        import render_ladder
+        for path, content in render_ladder.render().items():
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), content,
+                                 "%s 已過時，請執行 python3 render_ladder.py" % path)
+
+
+# ---------------------------------------------------------------------------
+# 同一組 4 層測試：ST 程式與 FX3U 階梯圖各跑一次
+# ---------------------------------------------------------------------------
+class TestNormalServiceST(NormalService, unittest.TestCase):
+    PROGRAM = "main"
+
+
+class TestNormalServiceFX3U(NormalService, unittest.TestCase):
+    PROGRAM = "fx3u"
+
+
+class TestDoorST(Door, unittest.TestCase):
+    PROGRAM = "main"
+
+
+class TestDoorFX3U(Door, unittest.TestCase):
+    PROGRAM = "fx3u"
+
+
+class TestSafetyST(Safety, unittest.TestCase):
+    PROGRAM = "main"
+
+
+class TestSafetyFX3U(Safety, unittest.TestCase):
+    PROGRAM = "fx3u"
+
+
+class TestRandomTrafficST(RandomTraffic4, unittest.TestCase):
+    PROGRAM = "main"
+
+
+class TestRandomTrafficFX3U(RandomTraffic4, unittest.TestCase):
+    PROGRAM = "fx3u"
 
 
 if __name__ == "__main__":
