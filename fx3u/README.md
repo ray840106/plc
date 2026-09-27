@@ -14,6 +14,8 @@
 | [ladder.html](ladder.html) | 階梯圖網頁版：下載後用瀏覽器開啟，每個梯級下方可展開指令表，也可以列印 |
 | [elevator_fx3u.txt](elevator_fx3u.txt) | 指令表（主檔，階梯圖由它自動產生） |
 | [devices.csv](devices.csv) | 軟元件註解（輸入到 GX Works2 的註解） |
+| [gx-works2/MAIN.csv](gx-works2/MAIN.csv) | **GX Works2 可直接讀取的程式**（含每個梯級的中文說明） |
+| [gx-works2/COMMENT.csv](gx-works2/COMMENT.csv) | GX Works2 可直接讀取的軟元件註解 |
 | [gx-developer/MAIN.csv](gx-developer/MAIN.csv) | **GX Developer 可匯入的程式**（清單格式，匯入後存檔即為 .gpj 專案） |
 | [gx-developer/COMMENT.csv](gx-developer/COMMENT.csv) | GX Developer 可匯入的軟元件註解（Big5 編碼） |
 
@@ -135,24 +137,27 @@ FX3U 的 T0~T199 是 100 ms 計時器：K30 = 3 秒。
 | 6 | 開門失敗 | 按 X27 |
 | 7 | 關門失敗 | 按 X27 |
 
-## 輸入到 GX Works2
+## 用 GX Works2（直接讀取，不需要 GX Developer）
 
-1. 新增專案：簡易專案（Simple Project）、PLC 系列 **FXCPU**、機型 **FX3U/FX3UC**、
-   語言 **階梯圖（Ladder）**。
-2. 對照 [LADDER.md](LADDER.md)（或 ladder.html）逐一輸入梯級。在階梯圖編輯畫面可以直接用
-   鍵盤輸入指令再按 Enter，例如 `LD X0`、`AND M239`、`SET M101`、`LD= D0 K1`、
-   `OUT T3 K30`、`MOV D2 D0`，順序照 [elevator_fx3u.txt](elevator_fx3u.txt)。
-   同一梯級有好幾個輸出時，照圖在右側畫成並聯。
-3. 軟元件註解照 [devices.csv](devices.csv) 輸入（可省略，但有註解比較好除錯）；
-   綠色的說明文字可輸入成「宣告」。
-4. 轉換（F4）後寫入 PLC。
+1. 新增專案：專案類型 **簡單工程（Simple Project）**、PLC 系列 **FXCPU**、機型 **FX3U/FX3UC**、
+   語言 **階梯圖**。
+2. 左側專案樹：程式 → **MAIN 按右鍵 → 從 CSV 檔讀取（Read from CSV File）**，
+   選 [gx-works2/MAIN.csv](gx-works2/MAIN.csv)。
+3. **全域軟元件註解按右鍵 → 從 CSV 檔讀取**，選 [gx-works2/COMMENT.csv](gx-works2/COMMENT.csv)。
+4. 轉換（F4）確認沒有錯誤，對照 [LADDER.md](LADDER.md) 檢查後存檔。
 
-本程式沒有使用 MPS/MRD/MPP 分支，每個梯級都是「一組接點 → 一個或多個輸出」，手動輸入比較不容易出錯。
+這兩個檔案是 UTF-16 編碼，繁體中文的註解和每個梯級的說明（行間聲明）都會一起讀進去。
+檔案格式照 GX Works2 自己匯出的 CSV（UTF-16、Tab 分隔，欄位標題取自簡體中文版的實際匯出檔）。
+如果你的 GX Works2 是其他語言版本而出現格式錯誤：在 MAIN 按右鍵 → **寫入 CSV 檔（Write to CSV File）**
+匯出目前的程式，把檔案前 3 列傳給我，我改成你那個版本的標題。
+
+GX Works2 也可以開啟 GX Developer 的 .gpj 專案：**Project → Open Other Data → Open Other Project**
+（開啟其他格式資料 → 開啟其他專案）。
 
 ## 用 GX Developer（.gpj 專案）
 
 .gpj 是 GX Developer 的專案檔，屬於三菱不公開的二進位格式，只能由 GX Developer 自己產生。
-所以這裡提供可以**匯入**的 CSV，匯入後存檔就是一般的 .gpj 專案，不需要手動輸入 998 步程式：
+所以這裡提供可以**匯入**的 CSV，匯入後存檔就是一般的 .gpj 專案，不需要手動輸入 1005 步程式：
 
 1. 新增專案（Project → New project）：PLC series **FXCPU**、PLC type **FX3U(C)**、
    Program type **Ladder**。
@@ -173,10 +178,24 @@ FX3U 的 T0~T199 是 100 ms 計時器：K30 = 3 秒。
 - 或者切換到清單（List）顯示，照 MAIN.csv 的「Instruction」與「I/O(Device)」欄逐條輸入
   （例如 `LD X027`、`MOV K0 D2`）。
 
-MAIN.csv 由 `sim/export_gx_developer.py` 從 [elevator_fx3u.txt](elevator_fx3u.txt) 自動產生，
+兩種 CSV 都由 `sim/export_gx.py` 從 [elevator_fx3u.txt](elevator_fx3u.txt) 自動產生，
 產生後會讀回來逐條比對，確認和階梯圖完全相同；X/Y 寫成三位數（X000、Y027），
 和 GX Developer 的顯示方式一致。這裡沒有 GX Developer 可以實際測試匯入，
 如果遇到問題請告訴我畫面上的訊息。
+
+## 手動輸入（不能匯入時）
+
+1. 新增專案：簡單工程（Simple Project）、PLC 系列 **FXCPU**、機型 **FX3U/FX3UC**、
+   語言 **階梯圖（Ladder）**。
+2. 對照 [LADDER.md](LADDER.md)（或 ladder.html）逐一輸入梯級。在階梯圖編輯畫面可以直接用
+   鍵盤輸入指令再按 Enter，例如 `LD X0`、`AND M239`、`SET M101`、`LD= D0 K1`、
+   `OUT T3 K30`、`MOV D2 D0`，順序照 [elevator_fx3u.txt](elevator_fx3u.txt)。
+   同一梯級有好幾個輸出時，照圖在右側畫成並聯。
+3. 軟元件註解照 [devices.csv](devices.csv) 輸入（可省略，但有註解比較好除錯）；
+   綠色的說明文字可輸入成「宣告」。
+4. 轉換（F4）後寫入 PLC。
+
+本程式沒有使用 MPS/MRD/MPP 分支，每個梯級都是「一組接點 → 一個或多個輸出」，手動輸入比較不容易出錯。
 
 ## 上機前先用模擬測試
 

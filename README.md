@@ -7,7 +7,8 @@ CODESYS、OpenPLC、Beremiz、Beckhoff TwinCAT 等，也可以照
 [移植說明](#移植到其他廠牌-plc) 改到西門子、三菱等 PLC。
 
 **三菱 FX3U 階梯圖版** 在 [fx3u/](fx3u/README.md)：同樣的功能改寫成 170 個梯級，
-可直接看 [階梯圖](fx3u/LADDER.md)，I/O 為 X0~X27、Y0~Y27（FX3U-48M）。
+可直接看 [階梯圖](fx3u/LADDER.md)，I/O 為 X0~X27、Y0~Y27（FX3U-48M），
+並附 GX Works2 / GX Developer 可直接匯入的 CSV（不用手動輸入）。
 
 程式已用 OpenPLC / Beremiz 同源的 matiec 編譯器編譯，並以電梯物理模型做
 自動模擬測試（ST 版 45 項，FX3U 階梯圖跑同一套 4 層測試 42 項，含隨機乘客壓力測試），
