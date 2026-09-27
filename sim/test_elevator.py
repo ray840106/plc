@@ -651,6 +651,15 @@ class TestLadderLint(unittest.TestCase):
         self.assertTrue(any("8 進位" in p for p in self.problems("LD X8\nOUT M399")))
 
 
+    def test_gx_developer_csv_up_to_date(self):
+        """fx3u/gx-developer/*.csv 必須和指令表一致（build() 內也會讀回逐條比對）。"""
+        import export_gx_developer
+        files, _ = export_gx_developer.build()
+        for path, (content, enc) in files.items():
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), content.encode(enc),
+                                 "%s 已過時，請執行 python3 export_gx_developer.py" % path)
+
     def test_rendered_ladder_up_to_date(self):
         """fx3u/ladder.html 與 fx3u/ladder/*.svg 必須和指令表一致。"""
         import render_ladder

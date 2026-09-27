@@ -14,6 +14,8 @@
 | [ladder.html](ladder.html) | 階梯圖網頁版：下載後用瀏覽器開啟，每個梯級下方可展開指令表，也可以列印 |
 | [elevator_fx3u.txt](elevator_fx3u.txt) | 指令表（主檔，階梯圖由它自動產生） |
 | [devices.csv](devices.csv) | 軟元件註解（輸入到 GX Works2 的註解） |
+| [gx-developer/MAIN.csv](gx-developer/MAIN.csv) | **GX Developer 可匯入的程式**（清單格式，匯入後存檔即為 .gpj 專案） |
+| [gx-developer/COMMENT.csv](gx-developer/COMMENT.csv) | GX Developer 可匯入的軟元件註解（Big5 編碼） |
 
 ## 硬體
 
@@ -146,6 +148,35 @@ FX3U 的 T0~T199 是 100 ms 計時器：K30 = 3 秒。
 4. 轉換（F4）後寫入 PLC。
 
 本程式沒有使用 MPS/MRD/MPP 分支，每個梯級都是「一組接點 → 一個或多個輸出」，手動輸入比較不容易出錯。
+
+## 用 GX Developer（.gpj 專案）
+
+.gpj 是 GX Developer 的專案檔，屬於三菱不公開的二進位格式，只能由 GX Developer 自己產生。
+所以這裡提供可以**匯入**的 CSV，匯入後存檔就是一般的 .gpj 專案，不需要手動輸入 998 步程式：
+
+1. 新增專案（Project → New project）：PLC series **FXCPU**、PLC type **FX3U(C)**、
+   Program type **Ladder**。
+2. **Project → Import file → Import from TEXT, CSV format file**，選
+   [gx-developer/MAIN.csv](gx-developer/MAIN.csv)，資料種類選程式（清單 / List）。
+   - 這個選單由 GX Developer 光碟上的 **GX Converter** 提供；看不到這個選單就是還沒安裝。
+   - 若出現設定畫面：分隔符號選逗號（Comma）、文字以雙引號括住；資料從第 4 列開始（前 3 列是標題）。
+3. 用同一個選單匯入 [gx-developer/COMMENT.csv](gx-developer/COMMENT.csv)，資料種類選註解（Comment）。
+   這個檔案是 Big5 編碼，給繁體中文 Windows 用；註解出現亂碼時可以跳過這一步，不影響程式。
+4. 轉換（F4），對照 [LADDER.md](LADDER.md) 檢查階梯圖，然後存檔（Project → Save）
+   —— 這時就得到 .gpj 專案。
+5. 寫入 PLC（Online → Write to PLC）。
+
+匯入失敗或格式不符時（不同語言版本的 GX Developer，CSV 標題列可能不同）：
+
+- 在你的 GX Developer 隨便寫兩三行程式，用 **Project → Export file → Export to TEXT, CSV format file**
+  匯出成 CSV，把檔案前幾行傳給我，我照你的版本格式重新產生 MAIN.csv。
+- 或者切換到清單（List）顯示，照 MAIN.csv 的「Instruction」與「I/O(Device)」欄逐條輸入
+  （例如 `LD X027`、`MOV K0 D2`）。
+
+MAIN.csv 由 `sim/export_gx_developer.py` 從 [elevator_fx3u.txt](elevator_fx3u.txt) 自動產生，
+產生後會讀回來逐條比對，確認和階梯圖完全相同；X/Y 寫成三位數（X000、Y027），
+和 GX Developer 的顯示方式一致。這裡沒有 GX Developer 可以實際測試匯入，
+如果遇到問題請告訴我畫面上的訊息。
 
 ## 上機前先用模擬測試
 
